@@ -29,21 +29,23 @@ public:
     Vector3t vt = state.middleRows(3, 3);
     Quaterniont qt(state[6], state[7], state[8], state[9]);
     qt.normalize();
-
+    std::cout<<"control function state:"<<state(0)<<" "<<state(1)<<std::endl;
+    std::cout<<"control function control:"<<control(0)<<" "<<control(1)<<std::endl;
     Vector3t acc_bias = state.middleRows(10, 3);
     Vector3t gyro_bias = state.middleRows(13, 3);
 
     Vector3t raw_acc = control.middleRows(0, 3);
+//    std::cout<<"raw_acc:"<<raw_acc(0)<<" "<<raw_acc(1)<<" "<<raw_acc(2)<<std::endl;
     Vector3t raw_gyro = control.middleRows(3, 3);
-
+//    std::cout<<"raw_gyro:"<<raw_gyro(0)<<" "<<raw_gyro(1)<<" "<<raw_gyro(2)<<std::endl;
     // position
     next_state.middleRows(0, 3) = pt + vt * dt;					//
 
     // velocity
-    Vector3t g(0.0f, 0.0f, -9.80665f);
+    Vector3t g(0.0f, 0.0f, -10.04f);
     Vector3t acc_ = raw_acc - acc_bias;
     Vector3t acc = qt * acc_;
-    next_state.middleRows(3, 3) = vt; // + (acc - g) * dt;		// acceleration didn't contribute to accuracy due to large noise
+    next_state.middleRows(3, 3) = vt;// + 0.5*(acc - g) * dt;		// acceleration didn't contribute to accuracy due to large noise
 
     // orientation
     Vector3t gyro = raw_gyro - gyro_bias;
@@ -54,6 +56,7 @@ public:
 
     next_state.middleRows(10, 3) = state.middleRows(10, 3);		// constant bias on acceleration
     next_state.middleRows(13, 3) = state.middleRows(13, 3);		// constant bias on angular velocity
+    std::cout<<"control function next_state:"<<next_state(0)<<" "<<next_state(1)<<std::endl;
 
     return next_state;
   }

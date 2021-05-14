@@ -23,6 +23,7 @@ find_package(catkin REQUIRED COMPONENTS
 )
 
 find_package(PCL 1.7 REQUIRED)
+find_package(GTSAM REQUIRED QUIET)
 include_directories(${PCL_INCLUDE_DIRS})
 link_directories(${PCL_LIBRARY_DIRS})
 add_definitions(${PCL_DEFINITIONS})
@@ -42,6 +43,7 @@ endif()
 ###################################
 catkin_package(
   INCLUDE_DIRS include
+  DEPENDS PCL GTSAM
 #  LIBRARIES hdl_scan_matching_odometry
 #  CATKIN_DEPENDS pcl_ros roscpp sensor_msgs
 #  DEPENDS system_lib
@@ -52,6 +54,7 @@ catkin_package(
 ###########
 include_directories(include)
 include_directories(
+   ${GTSAM_INCLUDE_DIR}
   ${catkin_INCLUDE_DIRS}
 )
 
@@ -60,6 +63,7 @@ add_library(hdl_localization_nodelet apps/hdl_localization_nodelet.cpp)
 target_link_libraries(hdl_localization_nodelet
   ${catkin_LIBRARIES}
   ${PCL_LIBRARIES}
+  gtsam
 )
 
 add_library(globalmap_server_nodelet apps/globalmap_server_nodelet.cpp)
