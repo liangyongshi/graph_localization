@@ -102,13 +102,13 @@ namespace hdl_localization {
         }
         void update(const gtsam::NavState &latestState,const gtsam::imuBias::ConstantBias &latestBias)
         {
-            Eigen::Quaterniond quat(latestState.quaternion().w(),latestState.quaternion().x(),latestState.quaternion().y(),latestState.quaternion().z());
-            quat.normalize();
-            this->state.middleRows(6,4)=Eigen::Vector4d(quat.w(),quat.x(),quat.y(),quat.z());
-            this->state.middleRows(0,3)=Eigen::Vector3d(latestState.position().x(),latestState.position().y(),latestState.position().y());
-            this->state.middleRows(3,3)=Eigen::Vector3d(latestState.velocity().x(),latestState.velocity().y(),latestState.velocity().z());
-            this->state.middleRows(10,3)=Eigen::Vector3d(latestBias.accelerometer().x(),latestBias.accelerometer().y(),latestBias.accelerometer().z());
-            this->state.middleRows(13,3)=Eigen::Vector3d(latestBias.gyroscope().x(),latestBias.gyroscope().y(),latestBias.gyroscope().z());
+            Eigen::Quaterniond stateQuat(latestState.quaternion().w(),latestState.quaternion().x(),latestState.quaternion().y(),latestState.quaternion().z());
+            stateQuat.normalize();
+            this->state.middleRows(6,4) = Eigen::Vector4d(stateQuat.w(),stateQuat.x(),stateQuat.y(),stateQuat.z());
+            this->state.middleRows(0,3) = Eigen::Vector3d(latestState.position().x(),latestState.position().y(),latestState.position().z());
+            this->state.middleRows(3,3) = Eigen::Vector3d(latestState.velocity().x(),latestState.velocity().y(),latestState.velocity().z());
+            this->state.middleRows(10,3)= Eigen::Vector3d(latestBias.accelerometer().x(),latestBias.accelerometer().y(),latestBias.accelerometer().z());
+            this->state.middleRows(13,3)= Eigen::Vector3d(latestBias.gyroscope().x(),latestBias.gyroscope().y(),latestBias.gyroscope().z());
 
             trans_pre.block<3, 3>(0, 0) = this->quat().toRotationMatrix();
             trans_pre.block<3, 1>(0, 3) = this->pos();

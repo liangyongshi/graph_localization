@@ -65,7 +65,9 @@ public:
     processing_time.resize(16);
     imuAccNoise = private_nh.param<double>("imuAccNoise", 0.01);
     imuGyrNoise = private_nh.param<double>("imuGyrNoise", 0.001);
-    initialize_params();
+    odomLinearNoise = private_nh.param<double>("odomLinearNoise", 0.01);
+    odomAngularNoise = private_nh.param<double>("odomAngularNoise", 0.01);
+    gravity= private_nh.param<double>("gravity", 10.04);
     opt_frames = private_nh.param<int>("opt_frames", 20);
     odom_child_frame_id = private_nh.param<std::string>("odom_child_frame_id", "base_link");
     use_imu = private_nh.param<bool>("use_imu", true);
@@ -75,9 +77,9 @@ public:
     points_sub = mt_nh.subscribe("/velodyne_points", 5, &HdlLocalizationNodelet::points_callback, this);
     globalmap_sub = nh.subscribe("/globalmap", 1, &HdlLocalizationNodelet::globalmap_callback, this);
     initialpose_sub = nh.subscribe("/initialpose", 8, &HdlLocalizationNodelet::initialpose_callback, this);
-    //updateGlobalPose_sub=nh.subscribe("/odometry/imu",20,&HdlLocalizationNodelet::globalpose_callback,this);
     pose_incre_pub = nh.advertise<nav_msgs::Odometry>("/ndt/incre_odom", 30, false);
     pose_pub = nh.advertise<nav_msgs::Odometry>("/ndt/global_odom", 20, false);
+    initialize_params();
 
   }
 
@@ -139,11 +141,11 @@ private:
     }
 //    poseFrom = gtsam::Pose3(gtsam::Rot3::Quaternion(1.0,0.0,0.0,0.0),gtsam::Point3(0.0,0.0,0.0));
       //*****************factor graph********************//
-      boost::shared_ptr<gtsam::PreintegrationParams> p = gtsam::PreintegrationParams::MakeSharedU(10.04);
+      boost::shared_ptr<gtsam::PreintegrationParams> p = gtsam::PreintegrationParams::MakeSharedU(gravity);
       p->accelerometerCovariance  = gtsam::Matrix33::Identity(3,3) * pow(imuAccNoise, 2); // acc white noise in continuous
       p->gyroscopeCovariance      = gtsam::Matrix33::Identity(3,3) * pow(imuGyrNoise, 2); // gyro white noise in continuous
       p->integrationCovariance    = gtsam::Matrix33::Identity(3,3) * pow(1e-4, 2); // error committed in integrating position from velocities
-      gtsam::imuBias::ConstantBias prior_imu_bias((gtsam::Vector(6) << 0, 0, 0, 0, 0, 0).finished());; // assume zero initial bias
+      gtsam::imuBias::ConstantBias prior_imu_bias((gtsam::Vector(6) << 0, 0, 0, 0, 0, 0).finished()); // assume zero initial bias
       priorPoseNoise  = gtsam::noiseModel::Diagonal::Sigmas((gtsam::Vector(6) << 1e-2, 1e-2, 1e-2, 1e-2, 1e-2, 1e-2).finished()); // rad,rad,rad,m, m, m
       priorVelNoise   = gtsam::noiseModel::Isotropic::Sigma(3, 1e2); // m/s
       priorBiasNoise  = gtsam::noiseModel::Isotropic::Sigma(6, 1e-3); // 1e-2 ~ 1e-3 seems to be good
@@ -181,6 +183,7 @@ private:
           points_pre_time=points_msg->header.stamp;
           firstkey= false;
       }
+
       auto time_interval= points_curr_time-points_pre_time;
 
       if(time_interval.toSec()<key_interval) return;// select key frames according to time interval
@@ -229,19 +232,16 @@ private:
 //      localOdom=localOdom_temp.cast<double>();
 
 
-      gtsam::Pose3 poseFrom = gtsam::Pose3(gtsam::Rot3::Quaternion(pose_estimator->quat().w(),pose_estimator->quat().x(),pose_estimator->quat().y(),pose_estimator->quat().z()),
-                   gtsam::Point3(pose_estimator->pos()(0),pose_estimator->pos()(1),pose_estimator->pos()(2)));
 
-      auto aligned = pose_estimator->correct(filtered);
 
-      gtsam::Pose3 poseTo = gtsam::Pose3(gtsam::Rot3::Quaternion(pose_estimator->quat().w(),pose_estimator->quat().x(),pose_estimator->quat().y(),pose_estimator->quat().z()),
-                   gtsam::Point3(pose_estimator->pos()(0),pose_estimator->pos()(1),pose_estimator->pos()(2)));
 
       if(!systemInitialized){
 
           resetOptimization();
 
-          newgraph.add(PriorFactor<Pose3>(X(0), poseTo, priorPoseNoise));
+          newgraph.add(PriorFactor<Pose3>(X(0), prevPose_, priorPoseNoise));
+          std::cout<<"initial value:"<<prevPose_.x()<<" "<<prevPose_.y()<<" "<<prevPose_.z()<<" "<<prevPose_.rotation().roll()<<" "
+          <<prevPose_.rotation().pitch()<<" "<<prevPose_.rotation().yaw()<<std::endl;
 
           //initial velocity
           prevVel_ = gtsam::Vector3(0, 0, 0);
@@ -254,11 +254,11 @@ private:
           newgraph.add(priorBias);
 
           //add values
-          initialEstimate.insert(X(0), poseTo);
+          initialEstimate.insert(X(0), prevPose_);
           initialEstimate.insert(V(0), prevVel_);
           initialEstimate.insert(B(0), prevBias_);
 
-          isam.update(newgraph, initialEstimate);
+          optimizer->update(newgraph, initialEstimate);
 
           newgraph.resize(0);
           initialEstimate.clear();
@@ -268,11 +268,14 @@ private:
           return;
       }
       else{
+
+
+
           if(key_count==opt_frames)
           {
-              gtsam::noiseModel::Gaussian::shared_ptr updatedPoseNoise = gtsam::noiseModel::Gaussian::Covariance(isam.marginalCovariance(X(key_count-1)));
-              gtsam::noiseModel::Gaussian::shared_ptr updatedVelNoise  = gtsam::noiseModel::Gaussian::Covariance(isam.marginalCovariance(V(key_count-1)));
-              gtsam::noiseModel::Gaussian::shared_ptr updatedBiasNoise = gtsam::noiseModel::Gaussian::Covariance(isam.marginalCovariance(B(key_count-1)));
+              gtsam::noiseModel::Gaussian::shared_ptr updatedPoseNoise = gtsam::noiseModel::Gaussian::Covariance(optimizer->marginalCovariance(X(key_count-1)));
+              gtsam::noiseModel::Gaussian::shared_ptr updatedVelNoise  = gtsam::noiseModel::Gaussian::Covariance(optimizer->marginalCovariance(V(key_count-1)));
+              gtsam::noiseModel::Gaussian::shared_ptr updatedBiasNoise = gtsam::noiseModel::Gaussian::Covariance(optimizer->marginalCovariance(B(key_count-1)));
               // reset graph
               resetOptimization();
               // add pose
@@ -289,12 +292,25 @@ private:
               initialEstimate.insert(V(0), prevVel_);
               initialEstimate.insert(B(0), prevBias_);
               // optimize once
-              isam.update(newgraph, initialEstimate);
+              optimizer->update(newgraph, initialEstimate);
               newgraph.resize(0);
               initialEstimate.clear();
 
               key_count=1;
           }
+          gtsam::Pose3 poseFrom = gtsam::Pose3(gtsam::Rot3::Quaternion(pose_estimator->quat().w(),pose_estimator->quat().x(),pose_estimator->quat().y(),pose_estimator->quat().z()),
+                                               gtsam::Point3(pose_estimator->pos()(0),pose_estimator->pos()(1),pose_estimator->pos()(2)));
+          std::cout<<"prior value:"<<poseFrom.x()<<" "<<poseFrom.y()<<" "<<poseFrom.z()<<" "<<poseFrom.rotation().roll()<<" "
+                   <<poseFrom.rotation().pitch()<<" "<<poseFrom.rotation().yaw()<<std::endl;
+
+          auto aligned = pose_estimator->correct(filtered);
+
+          gtsam::Pose3 poseTo = gtsam::Pose3(gtsam::Rot3::Quaternion(pose_estimator->quat().w(),pose_estimator->quat().x(),pose_estimator->quat().y(),pose_estimator->quat().z()),
+                                             gtsam::Point3(pose_estimator->pos()(0),pose_estimator->pos()(1),pose_estimator->pos()(2)));
+          std::cout<<"update value:"<<poseTo.x()<<" "<<poseTo.y()<<" "<<poseTo.z()<<" "<<poseTo.rotation().roll()<<" "
+                   <<poseTo.rotation().pitch()<<" "<<poseTo.rotation().yaw()<<std::endl;
+
+
 
 
            std::lock_guard<std::mutex> lock(imu_data_mutex);
@@ -309,6 +325,9 @@ private:
               }
            imu_data.erase(imu_data.begin(),imu_iter);
 
+          gtsam::PriorFactor<gtsam::Pose3> pose_factor(X(key_count), poseTo, correctionNoise);
+          newgraph.add(pose_factor);
+
           const gtsam::PreintegratedImuMeasurements& preint_imu = dynamic_cast<const gtsam::PreintegratedImuMeasurements&>(*imuIntegratorImu_);
           gtsam::ImuFactor imu_factor(X(key_count - 1), V(key_count - 1), X(key_count), V(key_count), B(key_count - 1), preint_imu);
 
@@ -316,29 +335,51 @@ private:
           newgraph.add(gtsam::BetweenFactor<gtsam::imuBias::ConstantBias>(B(key_count - 1), B(key_count), gtsam::imuBias::ConstantBias(),
                                                                               gtsam::noiseModel::Diagonal::Sigmas(sqrt(imuIntegratorImu_->deltaTij()) * noiseModelBetweenBias)));
 
-
-          gtsam::PriorFactor<gtsam::Pose3> pose_factor(X(key_count), poseTo, correctionNoise);
-          newgraph.add(pose_factor);
-
           gtsam::NavState propState_ = imuIntegratorImu_->predict(prevState_, prevBias_);
 
-          noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << 1e-1, 1e-1, 1e-1, 1e-2, 1e-2, 1e-1).finished());
+
+          std::cout<<" imu integre propState:"<<propState_.pose().x()<<" "<<propState_.pose().y()<<" "<<propState_.pose().z()<<" "<<
+                   propState_.pose().rotation().roll()<<" "<<propState_.pose().rotation().pitch()<<" "<<propState_.pose().rotation().yaw()<<std::endl;
+
+
+
+          if(propState_.pose().z()<-0.1)
+          {
+              gtsam::Quaternion quat(propState_.quaternion());
+              quat.normalized();
+              poseTo = gtsam::Pose3(gtsam::Rot3::Quaternion(quat.w(),quat.x(),quat.y(),quat.z()),gtsam::Point3(propState_.pose().x(),propState_.pose().y(),-0.1));
+          }
+          else if (propState_.pose().z()>0.1)
+          {
+
+              gtsam::Quaternion quat(propState_.quaternion());
+              quat.normalized();
+              poseTo = gtsam::Pose3(gtsam::Rot3::Quaternion(quat.w(),quat.x(),quat.y(),quat.z()),gtsam::Point3(propState_.pose().x(),propState_.pose().y(),0.10));
+          }
+
+          std::cout<<"propState_.pose().z():"<<propState_.pose().z()<<std::endl;
+
+          noiseModel::Diagonal::shared_ptr odometryNoise = noiseModel::Diagonal::Variances((Vector(6) << odomLinearNoise, odomLinearNoise, odomLinearNoise, odomAngularNoise, odomAngularNoise, odomAngularNoise).finished());
 
           newgraph.add(BetweenFactor<Pose3>(X(key_count-1), X(key_count), poseFrom.between(poseTo), odometryNoise));
+
+
 
           initialEstimate.insert(X(key_count), poseTo);
           initialEstimate.insert(V(key_count), propState_.v());
           initialEstimate.insert(B(key_count), prevBias_);
       }
 
-      isam.update(newgraph, initialEstimate);
-
+      optimizer->update(newgraph, initialEstimate);
       newgraph.resize(0);
       initialEstimate.clear();
       gtsam::Pose3 latestEstimate;
-      isamCurrentEstimate = isam.calculateEstimate();
+      isamCurrentEstimate = optimizer->calculateEstimate();
 
       prevPose_ = isamCurrentEstimate.at<Pose3>(X(key_count));
+
+
+
       prevVel_ =isamCurrentEstimate.at<Vector3>(V(key_count));
       prevState_ = gtsam::NavState(prevPose_, prevVel_);
       prevBias_=isamCurrentEstimate.at<imuBias::ConstantBias>(B(key_count));
@@ -373,7 +414,7 @@ private:
       laserOdometryROS.pose.pose.position.x = prevPose_.x();
       laserOdometryROS.pose.pose.position.y = prevPose_.y();
       laserOdometryROS.pose.pose.position.z = prevPose_.z();
-      laserOdometryROS.pose.pose.orientation = odom_trans.transform.rotation;
+      laserOdometryROS.pose.pose.orientation = odom_quat;
       pose_pub.publish(laserOdometryROS);
 
       points_pre_time = points_curr_time;
@@ -522,11 +563,23 @@ private:
         gtsam::ISAM2Params optParameters;
         optParameters.relinearizeThreshold = 0.1;
         optParameters.relinearizeSkip = 1;
-        isam = gtsam::ISAM2(optParameters);
+        optimizer = new gtsam::ISAM2(optParameters);
         gtsam::NonlinearFactorGraph newGraphFactors;
         newgraph = newGraphFactors;
         gtsam::Values NewGraphValues;
         initialEstimate = NewGraphValues;
+
+//        gtsam::LevenbergMarquardtParams optParameters;
+//        optParameters.setVerbosity("ERROR");
+//        optParameters.setOrderingType("METIS");
+//        optParameters.setLinearSolverType("MULTIFRONTAL_CHOLESKY");
+//        gtsam::NonlinearFactorGraph newGraphFactors;
+//        newgraph = newGraphFactors;
+//        gtsam::Values NewGraphValues;
+//        initialEstimate = NewGraphValues;
+//        optimizer= new gtsam::LevenbergMarquardtOptimizer optimizer(newgraph,initialEstimate,optParameters);
+
+
     }
 
 private:
@@ -579,15 +632,15 @@ private:
 public:
   bool firstkey=true;
   NonlinearFactorGraph newgraph;
-  gtsam::ISAM2 isam;
-//  gtsam::LevenbergMarquardtOptimizer optimizer;
+  gtsam::ISAM2 *optimizer;
+//  gtsam::LevenbergMarquardtOptimizer *optimizer;
   gtsam::Values initialEstimate;
-  gtsam::Values optimizedEstimate;
   gtsam::Values isamCurrentEstimate;
   gtsam::PreintegratedImuMeasurements *imuIntegratorImu_;
   bool systemInitialized;
   int key_count;
-  double imuAccNoise,imuGyrNoise;
+  double imuAccNoise,imuGyrNoise,gravity;
+  double odomLinearNoise,odomAngularNoise;
 
   gtsam::noiseModel::Diagonal::shared_ptr priorPoseNoise;
   gtsam::noiseModel::Diagonal::shared_ptr priorVelNoise;
